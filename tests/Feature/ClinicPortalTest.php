@@ -161,6 +161,7 @@ class ClinicPortalTest extends TestCase
             'BRAND_NAME' => 'Biogesic',
             'ITEM_CATEGORY' => 'Medicine',
             'ITEM_QUANTITY' => 3,
+            'target_stock' => 100,
             'ITEM_EXPIRATION_DATE' => now()->addMonth()->toDateString(),
         ]);
 
@@ -244,6 +245,7 @@ class ClinicPortalTest extends TestCase
                 'ITEM_CATEGORY' => 'Medicine',
                 'ITEM_FORM' => 'Capsule',
                 'ITEM_QUANTITY' => 3 + $index,
+                'target_stock' => 100,
                 'ITEM_EXPIRATION_DATE' => now()->addYear()->toDateString(),
             ]);
         }
@@ -259,6 +261,36 @@ class ClinicPortalTest extends TestCase
         foreach ($names as $name) {
             $inventory->assertSee($name);
         }
+    }
+
+    public function test_dashboard_shows_missing_baselines_as_out_of_stock_with_low_stock(): void
+    {
+        $user = $this->signIn('Medical Staff', 'mina.baseline@apc.edu.ph', 'Mina', 'Reyes', 'EMP-305', 'Nurse');
+
+        Inventory::create([
+            'ITEM_CODE' => 8801,
+            'GENERIC_NAME' => 'Tracked gauze',
+            'ITEM_CATEGORY' => 'Medical Supply',
+            'ITEM_FORM' => 'Box',
+            'ITEM_QUANTITY' => 10,
+            'target_stock' => 100,
+        ]);
+        Inventory::create([
+            'ITEM_CODE' => 8802,
+            'GENERIC_NAME' => 'Untracked cotton',
+            'ITEM_CATEGORY' => 'Medical Supply',
+            'ITEM_FORM' => 'Pack',
+            'ITEM_QUANTITY' => 0,
+            'needs_baseline_review' => true,
+        ]);
+
+        $dashboard = $this->actingAs($user)->get('/dashboard');
+        $dashboard->assertOk();
+        $dashboard->assertSee('Tracked gauze');
+        $dashboard->assertSee('Untracked cotton');
+        $dashboard->assertSee('Out of stock');
+        $dashboard->assertSee('no recorded baseline');
+        $dashboard->assertDontSee('All inventory stock levels are normal.');
     }
 
     public function test_only_itro_admins_and_developers_can_edit_profiles(): void
@@ -278,6 +310,8 @@ class ClinicPortalTest extends TestCase
             'madsoncha@gmail.com',
             'lccruz@student.apc.edu.ph',
             'latrellallencruz2314@gmail.com',
+            'ramercado3@student.apc.edu.ph',
+            'raf123mercado@gmail.com',
         ] as $index => $email) {
             $developer = $this->signIn('Student', $email, 'Dev', 'User', '2024101'.str_pad((string) $index, 3, '0', STR_PAD_LEFT));
             $this->actingAs($developer)->get('/users')->assertOk()->assertSee('Accounts');
@@ -644,6 +678,7 @@ class ClinicPortalTest extends TestCase
             'BRAND_NAME' => 'Biogesic',
             'ITEM_CATEGORY' => 'Medicine',
             'ITEM_QUANTITY' => 3,
+            'target_stock' => 100,
             'ITEM_EXPIRATION_DATE' => now()->addMonth()->toDateString(),
         ]);
         Inventory::create([
@@ -652,6 +687,7 @@ class ClinicPortalTest extends TestCase
             'BRAND_NAME' => 'Poten Cee',
             'ITEM_CATEGORY' => 'Medicine',
             'ITEM_QUANTITY' => 40,
+            'target_stock' => 100,
             'ITEM_EXPIRATION_DATE' => now()->addMonth()->toDateString(),
         ]);
 
@@ -740,10 +776,13 @@ class ClinicPortalTest extends TestCase
         $page = $this->get('/');
 
         $page->assertOk();
-        $page->assertSee('Log in');
+        $page->assertSee('Sign In to RAM-CIMS');
+        $page->assertSee('Sign in');
+        $page->assertSee('Forgot password');
         $page->assertSeeInOrder([
-            'Log in',
+            'Sign in',
             'Create an account',
+            'Forgot password',
             'Continue with Microsoft',
         ]);
         $page->assertDontSee('Continue with Google');
@@ -773,8 +812,8 @@ class ClinicPortalTest extends TestCase
         $this->post('/register', [
             'name' => 'Ana Cruz',
             'email' => 'ana.cruz@student.apc.edu.ph',
-            'password' => 'clinic-pass',
-            'password_confirmation' => 'clinic-pass',
+            'password' => 'clinic-pass1',
+            'password_confirmation' => 'clinic-pass1',
         ])->assertRedirect('/dashboard');
 
         $this->get('/dashboard')->assertSee('Welcome, Ana')->assertDontSee('View as');
@@ -787,8 +826,8 @@ class ClinicPortalTest extends TestCase
         $this->post('/register', [
             'name' => 'Ana Mae Torre',
             'email' => 'anamaet@apc.edu.ph',
-            'password' => 'clinic-pass',
-            'password_confirmation' => 'clinic-pass',
+            'password' => 'clinic-pass1',
+            'password_confirmation' => 'clinic-pass1',
         ])->assertRedirect('/dashboard');
 
         $this->get('/dashboard')->assertSee('APC Clinic Operations Dashboard')->assertDontSee('View as');
@@ -798,8 +837,8 @@ class ClinicPortalTest extends TestCase
         $this->post('/register', [
             'name' => 'Maria Magpantay',
             'email' => 'mariam@apc.edu.ph',
-            'password' => 'clinic-pass',
-            'password_confirmation' => 'clinic-pass',
+            'password' => 'clinic-pass1',
+            'password_confirmation' => 'clinic-pass1',
         ])->assertRedirect('/dashboard');
         $this->get('/inventory')->assertOk();
     }
@@ -809,8 +848,8 @@ class ClinicPortalTest extends TestCase
         $this->post('/register', [
             'name' => 'Outsider',
             'email' => 'outsider@yahoo.com',
-            'password' => 'clinic-pass',
-            'password_confirmation' => 'clinic-pass',
+            'password' => 'clinic-pass1',
+            'password_confirmation' => 'clinic-pass1',
         ])->assertSessionHasErrors('email');
     }
 
@@ -823,6 +862,8 @@ class ClinicPortalTest extends TestCase
             'madsoncha@gmail.com',
             'lccruz@student.apc.edu.ph',
             'latrellallencruz2314@gmail.com',
+            'ramercado3@student.apc.edu.ph',
+            'raf123mercado@gmail.com',
         ] as $email) {
             $this->assertTrue(\App\Support\PortalGrant::isDualView($email));
         }

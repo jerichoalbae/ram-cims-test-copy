@@ -23,6 +23,9 @@
     <div class="card mb-4 shadow-sm border-0 rounded-3">
         <div class="card-body">
             <form method="GET" action="/appointments" class="row g-3">
+                @if($showingHistory)
+                    <input type="hidden" name="history" value="1">
+                @endif
                 <div class="col-md-2">
                     <label for="search_id" class="form-label fw-semibold">Appt ID</label>
                     <input type="text" name="search_id" id="search_id" class="form-control rounded-2" placeholder="ID" value="{{ request('search_id') }}">
@@ -50,8 +53,12 @@
 
     <!-- Appointments Table -->
     <div class="card mb-4 shadow-sm border-0 rounded-3 overflow-hidden">
-        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
-            <h5 class="mb-0 fw-bold">{{ $isClinicStaff ? 'Clinic Appointments' : 'My Scheduled Appointments' }}</h5>
+        <div class="card-header bg-dark text-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3">
+            <div>
+                <h5 class="mb-0 fw-bold">{{ $showingHistory ? 'Previous weeks' : ($isClinicStaff ? 'Clinic Appointments' : 'My Scheduled Appointments') }}</h5>
+                <div class="small" style="color:#E1B11A;">{{ $showingHistory ? 'Earlier visits stay on file, in appointment time order.' : 'This week and later, in appointment time order.' }}</div>
+            </div>
+            <a class="btn btn-sm btn-outline-light fw-semibold" href="{{ route('appointments.index', $showingHistory ? request()->except('page', 'history') : array_merge(request()->except('page'), ['history' => 1])) }}">{{ $showingHistory ? 'Current and upcoming' : 'Previous weeks' }}</a>
             @if($isClinicStaff)
                 <button class="btn btn-sm btn-light fw-semibold rounded-2" data-bs-toggle="modal" data-bs-target="#addAppointmentModal">+ Schedule Appointment</button>
             @endif
@@ -69,9 +76,7 @@
                             <th>Physician/Staff</th>
                             <th>Date & Time</th>
                             <th>Status</th>
-                            @if($isClinicStaff)
-                                <th class="text-center">Actions</th>
-                            @endif
+                            <th class="text-center">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -83,45 +88,78 @@
                             <td><span class="badge bg-info text-dark">{{ $app->APPOINTMENT_TYPE }}</span></td>
                             <td>{{ $app->APPOINTMENT_REASON }}</td>
                             <td>{{ $app->ATTENDING_PHYSICIAN }}</td>
-                            <td>{{ \Carbon\Carbon::parse($app->SCHEDULED_AT)->format('Y-m-d h:i A') }}</td>
+                            <td>{{ \App\Support\ClinicCalendar::parse((string) $app->SCHEDULED_AT)->format('Y-m-d h:i A') }}</td>
                             <td>
                                 <span class="badge {{ $app->STATUS == 'Completed' ? 'bg-success' : ($app->STATUS == 'Cancelled' ? 'bg-danger' : 'bg-warning text-dark') }}">
                                     {{ $app->STATUS }}
                                 </span>
                             </td>
-                            @if($isClinicStaff)
                             <td class="text-center">
-                                <button type="button" class="btn btn-sm btn-outline-primary fw-semibold edit-btn rounded-2"
-                                    data-bs-toggle="modal" data-bs-target="#editAppointmentModal"
-                                    data-id="{{ $app->APPOINTMENT_ID }}"
-                                    data-patient-id="{{ $app->PATIENT_ID }}"
-                                    data-patient="{{ $app->PATIENT_NAME }}"
-                                    data-type="{{ $app->APPOINTMENT_TYPE }}"
-                                    data-reason="{{ $app->APPOINTMENT_REASON }}"
-                                    data-doctor="{{ $app->ATTENDING_PHYSICIAN }}"
-                                    data-schedule="{{ date('Y-m-d\TH:i', strtotime($app->SCHEDULED_AT)) }}"
-                                    data-status="{{ $app->STATUS }}">
-                                    Edit
-                                </button>
-                                <form action="/appointments/{{ $app->APPOINTMENT_ID }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to remove this appointment?');">
-                                    @csrf
-                                    @method('DELETE')
-                                    <button type="submit" class="btn btn-sm btn-outline-danger fw-semibold rounded-2">Remove</button>
-                                </form>
+                                @if($isClinicStaff)
+                                    <button type="button" class="btn btn-sm btn-outline-primary fw-semibold edit-btn rounded-2"
+                                        data-bs-toggle="modal" data-bs-target="#editAppointmentModal"
+                                        data-id="{{ $app->APPOINTMENT_ID }}"
+                                        data-patient-id="{{ $app->PATIENT_ID }}"
+                                        data-patient="{{ $app->PATIENT_NAME }}"
+                                        data-type="{{ $app->APPOINTMENT_TYPE }}"
+                                        data-reason="{{ $app->APPOINTMENT_REASON }}"
+                                        data-doctor="{{ $app->ATTENDING_PHYSICIAN }}"
+                                        data-schedule="{{ \App\Support\ClinicCalendar::parse((string) $app->SCHEDULED_AT)->format('Y-m-d\TH:i') }}"
+                                        data-status="{{ $app->STATUS }}">
+                                        Edit
+                                    </button>
+                                    <form action="/appointments/{{ $app->APPOINTMENT_ID }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to remove this appointment?');">
+                                        @csrf
+                                        @method('DELETE')
+                                        <button type="submit" class="btn btn-sm btn-outline-danger fw-semibold rounded-2">Remove</button>
+                                    </form>
+                                @elseif($app->studentCanCancel())
+                                    <button type="button" class="btn btn-sm btn-outline-danger fw-semibold rounded-2"
+                                        data-bs-toggle="modal" data-bs-target="#cancelAppointmentModal"
+                                        data-action="{{ route('appointments.cancel', $app) }}"
+                                        data-detail="#{{ $app->APPOINTMENT_ID }} · {{ \App\Support\ClinicCalendar::parse((string) $app->SCHEDULED_AT)->format('M d, Y h:i A') }}">
+                                        Cancel Appointment
+                                    </button>
+                                @else
+                                    <span class="text-muted">—</span>
+                                @endif
                             </td>
-                            @endif
                         </tr>
                         @empty
                         <tr>
-                            <td colspan="{{ $isClinicStaff ? 9 : 8 }}" class="text-center py-4 text-muted">No appointments found.</td>
+                            <td colspan="9" class="text-center py-4 text-muted">{{ $showingHistory ? 'No appointments from previous weeks.' : 'No appointments for this week or later.' }}</td>
                         </tr>
                         @endforelse
                     </tbody>
                 </table>
             </div>
+            @if($appointments->hasPages())
+                <div class="card-body border-top">{{ $appointments->links() }}</div>
+            @endif
         </div>
     </div>
+
+@unless($isClinicStaff)
+<div class="modal fade" id="cancelAppointmentModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="POST" id="cancelAppointmentForm" action="" class="modal-content">
+            @csrf
+            <div class="modal-header text-white" style="background:#003B7A;">
+                <h5 class="modal-title fw-bold">Cancel Appointment?</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="fw-semibold mb-2" id="cancelAppointmentDetail"></p>
+                <p class="mb-0">Are you sure you want to cancel this appointment? Your reserved time slot may become available for another patient.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Keep Appointment</button>
+                <button type="submit" class="btn btn-danger fw-semibold">Confirm Cancellation</button>
+            </div>
+        </form>
+    </div>
 </div>
+@endunless
 
 <!-- Add Appointment Modal -->
 <div class="modal fade" id="addAppointmentModal" tabindex="-1" aria-hidden="true">
@@ -175,7 +213,9 @@
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold" for="createDate">Duty Date</label>
-                    <input type="date" id="createDate" class="form-control duty-date" min="{{ date('Y-m-d') }}" required>
+                    <select id="createDate" class="form-select duty-date" required>
+                        <option value="" selected disabled>Choose a physician first</option>
+                    </select>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold" for="createSlot">Duty Time Slot</label>
@@ -231,7 +271,9 @@
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold" for="editDate">Duty Date</label>
-                    <input type="date" id="editDate" class="form-control duty-date" required>
+                    <select id="editDate" class="form-select duty-date" required>
+                        <option value="" selected disabled>Choose a physician first</option>
+                    </select>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold" for="editSlot">Duty Time Slot</label>
@@ -265,12 +307,25 @@
 @endif
 
 @include('partials.duty-board')
+</div>
 @endsection
 
 
 @push('scripts')
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const cancelModal = document.getElementById('cancelAppointmentModal');
+    if (cancelModal) {
+        cancelModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            if (!button) return;
+            const form = document.getElementById('cancelAppointmentForm');
+            const detail = document.getElementById('cancelAppointmentDetail');
+            if (form) form.action = button.getAttribute('data-action') || '';
+            if (detail) detail.textContent = button.getAttribute('data-detail') || '';
+        });
+    }
+
     const editModal = document.getElementById('editAppointmentModal');
 
     if (editModal) {
@@ -299,13 +354,12 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('edit_APPOINTMENT_REASON').value = button.getAttribute('data-reason') || '';
 
             const scheduled = (button.getAttribute('data-schedule') || '').replace('T', ' ');
-            const editDate = document.getElementById('editDate');
-            editDate.value = scheduled.slice(0, 10);
-            loadDutySlots(
+            loadDutyDates(
                 doctorSelect,
-                editDate,
+                document.getElementById('editDate'),
                 document.getElementById('editSlot'),
                 document.getElementById('editSlotHint'),
+                scheduled.slice(0, 10),
                 scheduled,
                 button.getAttribute('data-id')
             );
@@ -356,18 +410,74 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    async function loadDutyDates(physicianSelect, dateSelect, slotSelect, hint, selectedDate, selectedSlot, appointmentId) {
+        dateSelect.innerHTML = '<option value="" selected disabled>Choose a physician first</option>';
+        slotSelect.innerHTML = '<option value="" selected disabled>Choose a duty date first</option>';
+        if (!physicianSelect.value) {
+            hint.textContent = 'Dates come from this physician’s duty schedule.';
+            return;
+        }
+
+        hint.textContent = 'Checking duty dates…';
+        const params = new URLSearchParams({ physician: physicianSelect.value });
+        if (appointmentId) params.set('appointment_id', appointmentId);
+
+        try {
+            const response = await fetch('/appointments/duty-dates?' + params.toString(), {
+                headers: { 'Accept': 'application/json' }
+            });
+            const data = await response.json();
+            const dates = data.dates || [];
+            dateSelect.innerHTML = '';
+
+            if (!response.ok || !dates.length) {
+                dateSelect.add(new Option('No open duty dates', ''));
+                hint.textContent = 'This physician has no open duty dates in the current or upcoming weeks.';
+                return;
+            }
+
+            const placeholder = new Option('Select a duty date', '');
+            placeholder.disabled = true;
+            dateSelect.add(placeholder);
+            let matched = false;
+            dates.forEach(function (day) {
+                const option = new Option(day.label + ' (' + day.open_slots + ' open)', day.value);
+                if (selectedDate && day.value === selectedDate) {
+                    option.selected = true;
+                    matched = true;
+                }
+                dateSelect.add(option);
+            });
+            if (!matched) {
+                placeholder.selected = true;
+                hint.textContent = 'Only dates with an open duty slot are listed.';
+                return;
+            }
+
+            loadDutySlots(physicianSelect, dateSelect, slotSelect, hint, selectedSlot, appointmentId);
+        } catch (error) {
+            hint.textContent = 'The duty dates could not be loaded. Try again.';
+        }
+    }
+
     function watchDutyForm(physicianId, dateId, slotId, hintId, appointmentIdInput) {
         const physician = document.getElementById(physicianId);
         const date = document.getElementById(dateId);
         const slot = document.getElementById(slotId);
         const hint = document.getElementById(hintId);
         if (!physician || !date || !slot || !hint) return;
-        const refresh = function () {
-            const appointmentId = appointmentIdInput ? document.getElementById(appointmentIdInput)?.value : '';
-            loadDutySlots(physician, date, slot, hint, slot.value, appointmentId);
+        const appointmentId = function () {
+            return appointmentIdInput ? document.getElementById(appointmentIdInput)?.value : '';
         };
-        physician.addEventListener('change', refresh);
-        date.addEventListener('change', refresh);
+        physician.addEventListener('change', function () {
+            loadDutyDates(physician, date, slot, hint, '', '', appointmentId());
+        });
+        date.addEventListener('change', function () {
+            loadDutySlots(physician, date, slot, hint, '', appointmentId());
+        });
+        if (physician.value) {
+            loadDutyDates(physician, date, slot, hint, '', '', appointmentId());
+        }
     }
 
     watchDutyForm('createPhysician', 'createDate', 'createSlot', 'createSlotHint');

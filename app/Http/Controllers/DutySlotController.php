@@ -3,16 +3,17 @@
 namespace App\Http\Controllers;
 
 use App\Models\Appointment;
+use App\Models\AuditLog;
 use App\Support\ClinicAccess;
+use App\Support\ClinicCalendar;
 use App\Support\DutyBoard;
+use App\Support\DutySlotGuard;
 use App\Support\PortalGrant;
 use Illuminate\Http\Request;
 
 class DutySlotController extends Controller
 {
-    public function __construct(private DutyBoard $board, private ClinicAccess $access)
-    {
-    }
+    public function __construct(private DutyBoard $board, private ClinicAccess $access, private DutySlotGuard $slots) {}
 
     public function book(Request $request)
     {
@@ -48,7 +49,33 @@ class DutySlotController extends Controller
             ];
         }
 
-        $this->board->saveAppointment($data['practitioner'], $data['duty_date'], $data['start'], $fields);
+        $result = $this->slots->run(
+            $data['practitioner'],
+            $data['duty_date'].' '.$data['start'],
+            function () use ($data, $fields) {
+                $slot = $this->board->findSlot($data['practitioner'], $data['duty_date'], $data['start']);
+
+                if (! $slot) {
+                    return 'missing';
+                }
+
+                if ($slot['status'] !== 'available') {
+                    return 'taken';
+                }
+
+                $this->board->saveAppointment($data['practitioner'], $data['duty_date'], $data['start'], $fields);
+
+                return 'booked';
+            }
+        );
+
+        if ($result === 'missing') {
+            return $this->back($request)->with('error', 'That time slot is not on the duty board.');
+        }
+
+        if ($result !== 'booked') {
+            return $this->back($request)->with('error', 'That time slot is not available.');
+        }
 
         return $this->back($request)->with('success', 'Appointment booked for '.$fields['patient_name'].'.');
     }
@@ -68,26 +95,72 @@ class DutySlotController extends Controller
             return $this->back($request)->with('error', 'That visit is not on this physician\'s schedule.');
         }
 
-        $appointment->update(['STATUS' => 'Cancelled']);
+        $released = $this->slots->run(
+            (string) $appointment->ATTENDING_PHYSICIAN,
+            (string) $appointment->SCHEDULED_AT,
+            function () use ($appointment) {
+                $current = Appointment::query()->whereKey($appointment->getKey())->lockForUpdate()->first();
+
+                if (! $current) {
+                    return false;
+                }
+
+                $current->update(['STATUS' => 'Cancelled']);
+
+                return true;
+            }
+        );
+
+        if ($released !== true) {
+            return $this->back($request)->with('error', 'That visit could not be cancelled.');
+        }
 
         return $this->back($request)->with('success', 'The visit for '.$appointment->PATIENT_NAME.' was cancelled. That hour is open again.');
     }
 
     public function toggle(Request $request)
     {
-        abort_unless(PortalGrant::isDualView($request->user()?->email), 403, 'Slot status can be changed by the clinic development team.');
+        abort_unless($this->canManageSlots($request), 403, 'Only an authorized nurse or a listed clinic developer can change duty slot availability.');
 
         $data = $this->validated($request);
+        $status = $request->validate([
+            'status' => 'required|in:available,unavailable',
+        ])['status'];
+
         $slot = $this->board->findSlot($data['practitioner'], $data['duty_date'], $data['start']);
 
         if (! $slot) {
             return $this->respond($request, 'That time slot is not on the duty board.', false);
         }
 
-        $next = $this->board->nextStatus($slot['status']);
-        $this->board->setStatus($data['practitioner'], $data['duty_date'], $data['start'], $next);
+        if ($slot['status'] === 'occupied' || ! empty($slot['appointment_id'])) {
+            return $this->respond($request, 'An appointment is already booked in this slot. It was not changed.', false);
+        }
 
-        return $this->respond($request, 'Slot status updated.', true, ['status' => $next]);
+        $moment = ClinicCalendar::parse($data['duty_date'].' '.$data['start']);
+        if ($moment->lessThanOrEqualTo(ClinicCalendar::now())) {
+            return $this->respond($request, 'That duty time has already passed.', false);
+        }
+
+        if ($status === 'available' && empty($slot['on_duty'])) {
+            return $this->respond($request, 'That hour is not on this physician\'s duty schedule.', false);
+        }
+
+        if ($slot['status'] === $status) {
+            return $this->respond($request, 'That slot is already '.$status.'.', true, ['status' => $status]);
+        }
+
+        $this->board->setStatus($data['practitioner'], $data['duty_date'], $data['start'], $status);
+
+        AuditLog::record('duty.slot.availability', null, [
+            'practitioner' => $data['practitioner'],
+            'date' => $data['duty_date'],
+            'start' => $data['start'],
+            'from' => $slot['status'],
+            'to' => $status,
+        ]);
+
+        return $this->respond($request, 'Slot status updated.', true, ['status' => $status]);
     }
 
     public function assign(Request $request)
@@ -132,6 +205,21 @@ class DutySlotController extends Controller
         );
 
         return $this->back($request)->with('success', 'Slot appointment saved.');
+    }
+
+    private function canManageSlots(Request $request): bool
+    {
+        if (PortalGrant::isDualView($request->user()?->email)) {
+            return true;
+        }
+
+        if (! $this->access->isStaff()) {
+            return false;
+        }
+
+        $role = strtolower((string) $this->access->account()?->medicalStaff?->subUserType?->Name);
+
+        return $role === 'nurse';
     }
 
     private function validated(Request $request): array

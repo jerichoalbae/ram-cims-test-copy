@@ -35,6 +35,50 @@
             @include('partials.low-stock-table', ['items' => $lowStockItems ?? collect()])
         </div>
 
+        @if(($batchReviewCount ?? 0) > 0)
+            <div class="alert alert-warning">
+                {{ $batchReviewCount }} batch {{ $batchReviewCount === 1 ? 'row needs' : 'rows need' }} a recorded batch number. Existing quantities and expiration dates were kept. No batch number or date was invented.
+            </div>
+        @endif
+
+        <form method="GET" action="{{ url('/inventory') }}" class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-12 col-md-5">
+                        <label for="inventory-search" class="form-label fw-semibold">Search inventory</label>
+                        <input type="search" name="q" id="inventory-search" value="{{ $search ?? '' }}" class="form-control" placeholder="Name, brand, category, or item code">
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <label for="inventory-category" class="form-label fw-semibold">Category</label>
+                        <select name="category" id="inventory-category" class="form-select">
+                            <option value="">All categories</option>
+                            @foreach(array_keys(\App\Models\Inventory::FORMS) as $categoryOption)
+                                <option value="{{ $categoryOption }}" @selected(($category ?? '') === $categoryOption)>{{ $categoryOption }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3 d-flex gap-2">
+                        <button type="submit" class="btn btn-primary fw-semibold">Search</button>
+                        @if(($search ?? '') !== '' || ($category ?? '') !== '')
+                            <a href="{{ url('/inventory') }}" class="btn btn-outline-secondary">Clear</a>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        </form>
+
+        @if(($configurationItems ?? collect())->isNotEmpty())
+            <div class="alert alert-warning">
+                <div class="fw-semibold">Baseline review</div>
+                <p class="mb-2">These items are out of stock and have no recorded baseline. No stock quantity was invented for them.</p>
+                <ul class="mb-0">
+                    @foreach($configurationItems as $item)
+                        <li>{{ $item->GENERIC_NAME }} ({{ $item->ITEM_CATEGORY }})</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
+
         <div class="card shadow-sm">
             <div class="card-body p-0">
                 <table class="table table-hover table-striped mb-0 align-middle">
@@ -60,10 +104,23 @@
                                 <td>{{ trim(($item->ITEM_DOSAGE ?: '').' '.($item->ITEM_UNIT ?: '')) ?: 'N/A' }}</td>
                                 <td>{{ $item->ITEM_FORM ?: 'N/A' }}</td>
                                 <td><span class="fw-semibold text-secondary">{{ $item->ITEM_CATEGORY }}</span></td>
-                                <td class="fw-bold {{ $item->ITEM_QUANTITY < 10 ? 'text-danger' : 'text-success' }}">
+                                @php $stockStatus = $item->stockAssessment()['status']; @endphp
+                                <td class="fw-bold {{ $stockStatus === 'NORMAL' ? 'text-success' : 'text-danger' }}">
                                     {{ $item->ITEM_QUANTITY }} pcs
+                                    <div class="small fw-semibold">{{ $stockStatus }}</div>
                                 </td>
-                                <td>{{ $item->ITEM_EXPIRATION_DATE ? \Carbon\Carbon::parse($item->ITEM_EXPIRATION_DATE)->format('Y-M-d') : 'N/A' }}</td>
+                                <td>
+                                    @forelse($item->batches as $batch)
+                                        <div class="small">
+                                            {{ $batch->batch_code ?: 'No batch number' }}
+                                            · {{ $batch->quantity }}
+                                            · {{ $batch->expiration_date?->format('Y-m-d') ?: 'No date' }}
+                                            · {{ $batch->stateLabel() }}
+                                        </div>
+                                    @empty
+                                        {{ $item->ITEM_EXPIRATION_DATE ? \Carbon\Carbon::parse($item->ITEM_EXPIRATION_DATE)->format('Y-M-d') : 'N/A' }}
+                                    @endforelse
+                                </td>
                                 <td class="text-center text-nowrap">
                                     <button type="button" 
                                         class="btn btn-sm btn-outline-primary fw-semibold edit-btn"
@@ -77,9 +134,20 @@
                                         data-form="{{ $item->ITEM_FORM }}"
                                         data-category="{{ $item->ITEM_CATEGORY }}"
                                         data-quantity="{{ $item->ITEM_QUANTITY }}"
-                                        data-expiration="{{ $item->ITEM_EXPIRATION_DATE }}">
+                                        data-target="{{ $item->target_stock }}"
+                                        data-minimum="{{ $item->minimum_stock }}"
+                                        data-kit="{{ $item->kit_complete === null ? '' : (int) $item->kit_complete }}"
+                                        data-expiration="{{ $item->ITEM_EXPIRATION_DATE }}"
+                                        data-batch="{{ $item->batches->count() === 1 ? $item->batches->first()->batch_code : '' }}"
+                                        data-batch-count="{{ $item->batches->count() }}">
                                     Edit
                                     </button>
+                                    <form action="{{ route('inventory.dispense', $item->ITEM_CODE) }}" method="POST" class="d-inline-flex align-items-center gap-1 ms-1">
+                                        @csrf
+                                        <label class="visually-hidden" for="dispense-{{ $item->ITEM_CODE }}">Quantity to dispense</label>
+                                        <input id="dispense-{{ $item->ITEM_CODE }}" type="number" name="quantity" min="1" value="1" class="form-control form-control-sm" style="width:4.5rem" required>
+                                        <button type="submit" class="btn btn-sm btn-outline-primary fw-semibold">Dispense</button>
+                                    </form>
                                     <form action="/inventory/{{ $item->ITEM_CODE }}" method="POST" class="d-inline ms-1" onsubmit="return confirm(@js('Are you sure you want to delete '.$item->GENERIC_NAME.'?'))">
                                         @csrf
                                         @method('DELETE')
@@ -89,12 +157,15 @@
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="9" class="text-center py-5 text-muted">No campus clinic supplies recorded yet.</td>
+                                <td colspan="9" class="text-center py-5 text-muted">{{ ($search ?? '') !== '' || ($category ?? '') !== '' ? 'No inventory items match that search.' : 'No campus clinic supplies recorded yet.' }}</td>
                             </tr>
                         @endforelse
                     </tbody>
                 </table>
             </div>
+            @if($supplies->hasPages())
+                <div class="card-body border-top">{{ $supplies->links() }}</div>
+            @endif
         </div>
     </div>
 
@@ -150,9 +221,35 @@
                             <label for="ITEM_QUANTITY" class="form-label fw-semibold">Initial Quantity</label>
                             <input type="number" class="form-control" id="ITEM_QUANTITY" name="ITEM_QUANTITY" min="0" placeholder="0" required>
                         </div>
+                        <div class="col-md-6" data-item-group="target" hidden>
+                            <label for="target_stock" class="form-label fw-semibold">Approved baseline (optional)</label>
+                            <input type="number" class="form-control" id="target_stock" name="target_stock" min="1">
+                            <div class="form-text">Leave blank. The initial quantity becomes the baseline and stays fixed when stock is dispensed.</div>
+                        </div>
+                        <div class="col-md-6" data-item-group="threshold" hidden>
+                            <label for="minimum_stock" class="form-label fw-semibold">Custom Threshold (Optional)</label>
+                            <input type="number" class="form-control" id="minimum_stock" name="minimum_stock" min="0">
+                            <div class="form-text">Overrides the category default for this item only.</div>
+                        </div>
+                        <div class="col-12" data-item-group="kit" hidden>
+                            <input type="hidden" name="kit_complete" value="0">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="kit_complete" name="kit_complete" value="1" checked>
+                                <label class="form-check-label" for="kit_complete">Count this quantity as complete kits</label>
+                            </div>
+                        </div>
                         <div class="col-md-6" data-item-group="expiration" hidden>
                             <label for="ITEM_EXPIRATION_DATE" class="form-label fw-semibold" data-expiration-label>Expiration Date</label>
                             <input type="date" class="form-control" id="ITEM_EXPIRATION_DATE" name="ITEM_EXPIRATION_DATE">
+                        </div>
+                        <div class="col-md-6" data-item-group="expiration" hidden>
+                            <label for="batch_code" class="form-label fw-semibold">Batch number (optional)</label>
+                            <input type="text" class="form-control" id="batch_code" name="batch_code" maxlength="100">
+                            <div class="form-text">Leave blank if the receipt has no batch number. One will not be invented.</div>
+                        </div>
+                        <div class="col-md-6" data-item-group="expiration" hidden>
+                            <label for="receipt_reference" class="form-label fw-semibold">Receipt reference (optional)</label>
+                            <input type="text" class="form-control" id="receipt_reference" name="receipt_reference" maxlength="100">
                         </div>
                     </div>
                     <div class="modal-footer bg-light">
@@ -214,9 +311,31 @@
                             <label for="edit_ITEM_QUANTITY" class="form-label fw-semibold">Quantity</label>
                             <input type="number" class="form-control" id="edit_ITEM_QUANTITY" name="ITEM_QUANTITY" min="0" required>
                         </div>
+                        <div class="col-md-6" data-item-group="target">
+                            <label for="edit_target_stock" class="form-label fw-semibold">Approved baseline (optional)</label>
+                            <input type="number" class="form-control" id="edit_target_stock" name="target_stock" min="1">
+                            <div class="form-text">Leave blank to keep the saved baseline. Dispensing does not change it.</div>
+                        </div>
+                        <div class="col-md-6" data-item-group="threshold">
+                            <label for="edit_minimum_stock" class="form-label fw-semibold">Custom Threshold (Optional)</label>
+                            <input type="number" class="form-control" id="edit_minimum_stock" name="minimum_stock" min="0">
+                            <div class="form-text">Overrides the category default for this item only.</div>
+                        </div>
+                        <div class="col-12" data-item-group="kit">
+                            <input type="hidden" name="kit_complete" value="0">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="edit_kit_complete" name="kit_complete" value="1">
+                                <label class="form-check-label" for="edit_kit_complete">Count this quantity as complete kits</label>
+                            </div>
+                        </div>
                         <div class="col-md-6" data-item-group="expiration">
                             <label for="edit_ITEM_EXPIRATION_DATE" class="form-label fw-semibold" data-expiration-label>Expiration Date</label>
                             <input type="date" class="form-control" id="edit_ITEM_EXPIRATION_DATE" name="ITEM_EXPIRATION_DATE">
+                        </div>
+                        <div class="col-md-6" data-item-group="expiration">
+                            <label for="edit_batch_code" class="form-label fw-semibold">Batch number</label>
+                            <input type="text" class="form-control" id="edit_batch_code" name="batch_code" maxlength="100" autocomplete="off">
+                            <div class="form-text" id="edit_batch_help">Enter the number printed on the box or receipt. Leave blank if there is none.</div>
                         </div>
                     </div>
                     <div class="modal-footer bg-light">
@@ -234,10 +353,10 @@
     <script>
         const itemForms = @json(\App\Models\Inventory::FORMS);
         const itemLayouts = {
-            'Medicine': { show: ['name', 'brand', 'dosage', 'form', 'quantity', 'expiration'], expirationRequired: true },
-            'Equipment': { show: ['name', 'brand', 'form', 'quantity'], expirationRequired: false },
-            'Medical Supply': { show: ['name', 'brand', 'form', 'quantity', 'expiration'], expirationRequired: false },
-            'First Aid Kit': { show: ['name', 'brand', 'form', 'quantity'], expirationRequired: false }
+            'Medicine': { show: ['name', 'brand', 'dosage', 'form', 'quantity', 'target', 'threshold', 'expiration'], expirationRequired: true },
+            'Equipment': { show: ['name', 'brand', 'form', 'quantity', 'threshold'], expirationRequired: false },
+            'Medical Supply': { show: ['name', 'brand', 'form', 'quantity', 'target', 'threshold', 'expiration'], expirationRequired: false },
+            'First Aid Kit': { show: ['name', 'brand', 'form', 'quantity', 'threshold', 'kit'], expirationRequired: false }
         };
 
         function setFormOptions(select, options, current) {
@@ -277,6 +396,10 @@
             }
             const expiration = form.querySelector('[name="ITEM_EXPIRATION_DATE"]');
             const expirationLabel = form.querySelector('[data-expiration-label]');
+            const batchInput = form.querySelector('[name="batch_code"]');
+            if (batchInput && Number(form.dataset.batchCount || '0') > 1) {
+                batchInput.disabled = true;
+            }
             if (dosage) dosage.required = visible.indexOf('dosage') !== -1;
             if (unit) unit.required = visible.indexOf('dosage') !== -1;
             if (itemForm) itemForm.required = visible.indexOf('form') !== -1;
@@ -333,6 +456,9 @@
                     formSelect.value = form;
                     document.getElementById('edit_ITEM_CATEGORY').value = category === 'First Aid' ? 'First Aid Kit' : category;
                     document.getElementById('edit_ITEM_QUANTITY').value = quantity;
+                    document.getElementById('edit_target_stock').value = button.getAttribute('data-target') || '';
+                    document.getElementById('edit_minimum_stock').value = button.getAttribute('data-minimum') || '';
+                    document.getElementById('edit_kit_complete').checked = button.getAttribute('data-kit') !== '0';
 
                     // Format date for <input type="date"> (YYYY-MM-DD)
                     if (expiration) {
@@ -342,7 +468,19 @@
                         document.getElementById('edit_ITEM_EXPIRATION_DATE').value = '';
                     }
 
-                    applyItemLayout(document.getElementById('editItemForm'));
+                    const editForm = document.getElementById('editItemForm');
+                    const batchCount = Number(button.getAttribute('data-batch-count') || '0');
+                    const batchInput = document.getElementById('edit_batch_code');
+                    const batchHelp = document.getElementById('edit_batch_help');
+                    editForm.dataset.batchCount = String(batchCount);
+                    batchInput.value = button.getAttribute('data-batch') || '';
+                    if (batchCount > 1) {
+                        batchHelp.textContent = 'This item has more than one batch. Each batch number is listed on its own line.';
+                    } else {
+                        batchHelp.textContent = 'Enter the number printed on the box or receipt. Leave blank if there is none.';
+                    }
+
+                    applyItemLayout(editForm);
                 });
             }
 
